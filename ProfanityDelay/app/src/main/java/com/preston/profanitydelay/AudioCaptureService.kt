@@ -29,8 +29,8 @@ class AudioCaptureService : Service() {
         private const val CHANNEL_ID = "profanity_delay_channel"
         private const val NOTIF_ID = 1
 
-        private const val SAMPLE_RATE = 16000
-        private const val DELAY_MS = 5000L
+        private const val SAMPLE_RATE = 44100
+        private const val DELAY_MS = 10000L
         private const val CHUNK_MS = 500L
         private const val CHUNK_SAMPLES = (SAMPLE_RATE * CHUNK_MS / 1000).toInt()
 
@@ -55,6 +55,9 @@ class AudioCaptureService : Service() {
     private data class Chunk(val samples: ShortArray, val captureTimeMs: Long)
     private val bufferQueue = ArrayDeque<Chunk>()
     private val bufferLock = Object()
+
+    private val recognitionQueue = ArrayDeque<ShortArray>()
+    private val recognitionLock = Object()
 
     private var streamStartMillis = System.currentTimeMillis()
 
@@ -118,6 +121,7 @@ class AudioCaptureService : Service() {
 
         running.set(true)
         Thread(::captureLoop, "capture-thread").start()
+        Thread(::recognitionLoop, "recognition-thread").start()
         Thread(::playbackLoop, "playback-thread").start()
 
         return START_STICKY
@@ -227,8 +231,14 @@ class AudioCaptureService : Service() {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         audioTrack?.play()
+        audioTrack?.setVolume(0.6f)
     }
 
+    /**
+     * Reads live audio and only enqueues it (for playback and for
+     * recognition). Deliberately does no heavy processing here, so a slow
+     * recognition pass never stalls the live capture and causes glitches.
+     */
     private fun captureLoop() {
         streamStartMillis = System.currentTimeMillis()
         val chunkBuf = ShortArray(CHUNK_SAMPLES)
@@ -243,8 +253,24 @@ class AudioCaptureService : Service() {
             synchronized(bufferLock) {
                 bufferQueue.add(Chunk(samplesCopy, nowMs))
             }
+            synchronized(recognitionLock) {
+                recognitionQueue.add(samplesCopy)
+            }
+        }
+    }
 
-            val gotFinal = recognizer?.acceptWaveForm(samplesCopy, read) ?: false
+    /** Runs speech recognition at its own pace, independent of live capture. */
+    private fun recognitionLoop() {
+        while (running.get()) {
+            var samples: ShortArray? = null
+            synchronized(recognitionLock) {
+                samples = recognitionQueue.poll()
+            }
+            if (samples == null) {
+                Thread.sleep(20)
+                continue
+            }
+            val gotFinal = recognizer?.acceptWaveForm(samples, samples!!.size) ?: false
             val json = if (gotFinal) recognizer?.result else recognizer?.partialResult
             json?.let { parseAndFlag(it) }
         }
