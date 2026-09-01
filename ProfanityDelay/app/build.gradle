@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId "com.preston.profanitydelay"
-        minSdk 29   // AudioPlaybackCapture requires API 29+
+        minSdk 29
         targetSdk 34
         versionCode 1
         versionName "0.1"
@@ -27,9 +27,11 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
-    // Vosk model is large; don't let AAPT try to compress it
+    // The Vosk model ships as an already-compressed zip. Re-compressing it
+    // during the build wastes huge amounts of memory for no benefit and was
+    // the direct cause of the "Java heap space" build failure.
     aaptOptions {
-        noCompress "tflite", "model", "vosk"
+        noCompress "tflite", "model", "vosk", "zip"
     }
 }
 
@@ -38,7 +40,6 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
 
-    // Offline speech recognition — everything stays on-device
     implementation 'com.alphacephei:vosk-android:0.3.47@aar'
     implementation 'net.java.dev.jna:jna:5.13.0@aar'
 }
