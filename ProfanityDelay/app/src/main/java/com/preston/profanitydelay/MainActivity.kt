@@ -7,6 +7,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -16,18 +17,20 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var projectionManager: MediaProjectionManager
     private lateinit var statusText: TextView
+    private lateinit var transcriptText: TextView
+    private lateinit var transcriptScroll: ScrollView
 
     private val projectionLauncher =
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                statusText.text = "Capture granted. Starting filter service…"
+                statusText.text = "Capture granted. Starting filter service..."
                 val serviceIntent = Intent(this, AudioCaptureService::class.java).apply {
                     putExtra(AudioCaptureService.EXTRA_RESULT_CODE, result.resultCode)
                     putExtra(AudioCaptureService.EXTRA_RESULT_DATA, result.data)
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
             } else {
-                statusText.text = "Capture permission denied — can't filter without it."
+                statusText.text = "Capture permission denied - can't filter without it."
             }
         }
 
@@ -36,11 +39,18 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
+        transcriptText = findViewById(R.id.transcriptText)
+        transcriptScroll = findViewById(R.id.transcriptScroll)
         val startButton = findViewById<Button>(R.id.startButton)
         val stopButton = findViewById<Button>(R.id.stopButton)
 
         projectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+
+        AudioCaptureService.transcriptListener = { text ->
+            transcriptText.append(text + "\n")
+            transcriptScroll.post { transcriptScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+        }
 
         startButton.setOnClickListener { requestPermissionsThenCapture() }
         stopButton.setOnClickListener {
@@ -62,7 +72,7 @@ class MainActivity : AppCompatActivity() {
         ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
         }
-        statusText.text = "Requesting screen/audio capture permission…"
+        statusText.text = "Requesting screen/audio capture permission..."
         projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
     }
 
@@ -71,5 +81,10 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1) requestPermissionsThenCapture()
+    }
+
+    override fun onDestroy() {
+        AudioCaptureService.transcriptListener = null
+        super.onDestroy()
     }
 }
