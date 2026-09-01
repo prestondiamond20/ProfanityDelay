@@ -69,12 +69,12 @@ class AudioCaptureService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                     NOTIF_ID,
-                    buildNotification("Filtering audio…"),
+                    buildNotification("Filtering audio..."),
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                 )
             } else {
-                startForeground(NOTIF_ID, buildNotification("Filtering audio…"))
+                startForeground(NOTIF_ID, buildNotification("Filtering audio..."))
             }
 
             mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
@@ -94,7 +94,7 @@ class AudioCaptureService : Service() {
             android.os.Handler(mainLooper).post {
                 android.widget.Toast.makeText(
                     applicationContext,
-                    "Filter failed to start: ${e.javaClass.simpleName}: ${e.message}",
+                    "Filter failed to start: " + e.javaClass.simpleName + ": " + e.message,
                     android.widget.Toast.LENGTH_LONG
                 ).show()
             }
@@ -163,62 +163,4 @@ class AudioCaptureService : Service() {
     }
 
     private fun captureLoop() {
-        streamStartMillis = System.currentTimeMillis()
-        val chunkBuf = ShortArray(CHUNK_SAMPLES)
-
-        while (running.get()) {
-            val read = audioRecord?.read(chunkBuf, 0, chunkBuf.size) ?: -1
-            if (read <= 0) continue
-
-            val nowMs = System.currentTimeMillis() - streamStartMillis
-            val samplesCopy = chunkBuf.copyOf(read)
-
-            synchronized(bufferLock) {
-                bufferQueue.add(Chunk(samplesCopy, nowMs))
-            }
-
-            val gotFinal = recognizer?.acceptWaveForm(samplesCopy, read) ?: false
-            val json = if (gotFinal) recognizer?.result else recognizer?.partialResult
-            json?.let { parseAndFlag(it) }
-        }
-    }
-
-    private fun playbackLoop() {
-        while (running.get()) {
-            var toPlay: Chunk? = null
-            synchronized(bufferLock) {
-                val head = bufferQueue.peek()
-                if (head != null) {
-                    val age = (System.currentTimeMillis() - streamStartMillis) - head.captureTimeMs
-                    if (age >= DELAY_MS) {
-                        toPlay = bufferQueue.poll()
-                    }
-                }
-            }
-            if (toPlay == null) {
-                Thread.sleep(20)
-                continue
-            }
-            val chunk = toPlay!!
-            val windowStart = chunk.captureTimeMs
-            val windowEnd = chunk.captureTimeMs + CHUNK_MS
-
-            val muted = flaggedRanges.any { (s, e) -> s < windowEnd && e > windowStart }
-            val outSamples = if (muted) ShortArray(chunk.samples.size) else chunk.samples
-            audioTrack?.write(outSamples, 0, outSamples.size)
-
-            flaggedRanges.removeAll { (_, e) -> e < windowStart }
-        }
-    }
-
-    private fun parseAndFlag(json: String) {
-        try {
-            val obj = JSONObject(json)
-            val resultArray = obj.optJSONArray("result") ?: return
-            for (i in 0 until resultArray.length()) {
-                val w = resultArray.getJSONObject(i)
-                val word = w.optString("word").lowercase()
-                if (word in profanityWords) {
-                    val startMs = (w.optDouble("start") * 1000).toLong()
-                    val endMs = (w.optDouble("end") * 1000).toLong()
-                    flaggedRanges.add(Pair(startMs - 150, endMs + 150))
+        streamStartMillis =
