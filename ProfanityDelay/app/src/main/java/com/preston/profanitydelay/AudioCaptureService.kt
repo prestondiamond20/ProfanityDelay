@@ -43,7 +43,7 @@ class AudioCaptureService : Service() {
 
         // Must match the folder name inside vosk-model.zip (the zip's
         // top-level folder), and the version downloaded in build.yml.
-        private const val MODEL_DIR_NAME = "vosk-model-small-en-us-0.15"
+        private const val MODEL_DIR_NAME = "vosk-model-en-us-0.22"
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -83,21 +83,31 @@ class AudioCaptureService : Service() {
             return START_NOT_STICKY
         }
 
+        // startForeground must happen fast, on the main thread. Everything
+        // after it - especially loading a ~1.8GB model - can take several
+        // real seconds, so that part runs on a background thread instead of
+        // blocking here, or Android treats the service as frozen and kills it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIF_ID,
+                buildNotification("Loading speech model..."),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIF_ID, buildNotification("Loading speech model..."))
+        }
+
+        Thread({ initializeAndStart(resultCode, resultData) }, "init-thread").start()
+
+        return START_STICKY
+    }
+
+    private fun initializeAndStart(resultCode: Int, resultData: Intent) {
         val projectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIF_ID,
-                    buildNotification("Filtering audio..."),
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                )
-            } else {
-                startForeground(NOTIF_ID, buildNotification("Filtering audio..."))
-            }
-
             mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
             mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
@@ -123,15 +133,16 @@ class AudioCaptureService : Service() {
                 ).show()
             }
             stopSelf()
-            return START_NOT_STICKY
+            return
         }
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIF_ID, buildNotification("Filtering audio..."))
 
         running.set(true)
         Thread(::captureLoop, "capture-thread").start()
         Thread(::recognitionLoop, "recognition-thread").start()
         Thread(::playbackLoop, "playback-thread").start()
-
-        return START_STICKY
     }
 
     /**
