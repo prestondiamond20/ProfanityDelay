@@ -163,4 +163,117 @@ class AudioCaptureService : Service() {
     }
 
     private fun captureLoop() {
-        streamStartMillis =
+        streamStartMillis = System.currentTimeMillis()
+        val chunkBuf = ShortArray(CHUNK_SAMPLES)
+
+        while (running.get()) {
+            val read = audioRecord?.read(chunkBuf, 0, chunkBuf.size) ?: -1
+            if (read <= 0) continue
+
+            val nowMs = System.currentTimeMillis() - streamStartMillis
+            val samplesCopy = chunkBuf.copyOf(read)
+
+            synchronized(bufferLock) {
+                bufferQueue.add(Chunk(samplesCopy, nowMs))
+            }
+
+            val gotFinal = recognizer?.acceptWaveForm(samplesCopy, read) ?: false
+            val json = if (gotFinal) recognizer?.result else recognizer?.partialResult
+            json?.let { parseAndFlag(it) }
+        }
+    }
+
+    private fun playbackLoop() {
+        while (running.get()) {
+            var toPlay: Chunk? = null
+            synchronized(bufferLock) {
+                val head = bufferQueue.peek()
+                if (head != null) {
+                    val age = (System.currentTimeMillis() - streamStartMillis) - head.captureTimeMs
+                    if (age >= DELAY_MS) {
+                        toPlay = bufferQueue.poll()
+                    }
+                }
+            }
+            if (toPlay == null) {
+                Thread.sleep(20)
+                continue
+            }
+            val chunk = toPlay!!
+            val windowStart = chunk.captureTimeMs
+            val windowEnd = chunk.captureTimeMs + CHUNK_MS
+
+            val muted = flaggedRanges.any { range -> range.first < windowEnd && range.second > windowStart }
+            val outSamples = if (muted) ShortArray(chunk.samples.size) else chunk.samples
+            audioTrack?.write(outSamples, 0, outSamples.size)
+
+            flaggedRanges.removeAll { range -> range.second < windowStart }
+        }
+    }
+
+    private fun parseAndFlag(json: String) {
+        try {
+            val obj = JSONObject(json)
+            val resultArray = obj.optJSONArray("result") ?: return
+            for (i in 0 until resultArray.length()) {
+                val w = resultArray.getJSONObject(i)
+                val word = w.optString("word").lowercase()
+                if (word in profanityWords) {
+                    val startMs = (w.optDouble("start") * 1000).toLong()
+                    val endMs = (w.optDouble("end") * 1000).toLong()
+                    flaggedRanges.add(Pair(startMs - 150, endMs + 150))
+                    Log.i(TAG, "Flagged word at " + startMs + "ms-" + endMs + "ms")
+                }
+            }
+        } catch (e: Exception) {
+            // partial/empty JSON, ignore
+        }
+    }
+
+    private fun loadProfanityList(): Set<String> {
+        return try {
+            assets.open("profanity_list.txt").bufferedReader().readLines()
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    private fun assetsModelPath(): String {
+        return filesDir.absolutePath + "/vosk-model"
+    }
+
+    private fun buildNotification(text: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Profanity Delay")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID, "Profanity Delay", NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    override fun onDestroy() {
+        running.set(false)
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioTrack?.stop()
+        audioTrack?.release()
+        recognizer?.close()
+        model?.close()
+        mediaProjection?.stop()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
