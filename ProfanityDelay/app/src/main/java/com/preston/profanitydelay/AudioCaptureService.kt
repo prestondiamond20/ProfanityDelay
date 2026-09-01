@@ -81,7 +81,16 @@ class AudioCaptureService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIF_ID, buildNotification("Filtering audio…"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIF_ID,
+                buildNotification("Filtering audio…"),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIF_ID, buildNotification("Filtering audio…"))
+        }
 
         val projectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
