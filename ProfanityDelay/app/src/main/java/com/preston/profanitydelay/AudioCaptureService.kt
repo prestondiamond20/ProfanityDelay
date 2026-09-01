@@ -32,6 +32,7 @@ class AudioCaptureService : Service() {
         private const val SAMPLE_RATE = 44100
         private const val RECOGNIZER_SAMPLE_RATE = 16000
         private const val DELAY_MS = 10000L
+        private const val FORCE_FINAL_INTERVAL_MS = 2000L
         private const val CHUNK_MS = 500L
         private const val CHUNK_SAMPLES = (SAMPLE_RATE * CHUNK_MS / 1000).toInt()
 
@@ -260,8 +261,18 @@ class AudioCaptureService : Service() {
         }
     }
 
-    /** Runs speech recognition at its own pace, independent of live capture. */
+    /**
+     * Runs speech recognition at its own pace, independent of live capture.
+     *
+     * Vosk only emits a timestamped "final" result when it detects real
+     * silence. Continuous music rarely has silence, so we can't rely on
+     * that alone - we also force a flush on a fixed timer, so detection
+     * keeps happening regardless of whether the recognizer thinks anyone
+     * paused.
+     */
     private fun recognitionLoop() {
+        var lastForceFinal = System.currentTimeMillis()
+
         while (running.get()) {
             var samples: ShortArray? = null
             synchronized(recognitionLock) {
@@ -269,17 +280,27 @@ class AudioCaptureService : Service() {
             }
             if (samples == null) {
                 Thread.sleep(20)
-                continue
+            } else {
+                try {
+                    val downsampled = resample(samples!!, SAMPLE_RATE, RECOGNIZER_SAMPLE_RATE)
+                    val gotFinal = recognizer?.acceptWaveForm(downsampled, downsampled.size) ?: false
+                    if (gotFinal) {
+                        recognizer?.result?.let { parseAndFlag(it) }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Recognition step failed", e)
+                }
             }
-            // The model expects RECOGNIZER_SAMPLE_RATE audio specifically;
-            // feeding it our full-quality capture rate directly throws.
-            try {
-                val downsampled = resample(samples!!, SAMPLE_RATE, RECOGNIZER_SAMPLE_RATE)
-                val gotFinal = recognizer?.acceptWaveForm(downsampled, downsampled.size) ?: false
-                val json = if (gotFinal) recognizer?.result else recognizer?.partialResult
-                json?.let { parseAndFlag(it) }
-            } catch (e: Exception) {
-                Log.e(TAG, "Recognition step failed", e)
+
+            val now = System.currentTimeMillis()
+            if (now - lastForceFinal >= FORCE_FINAL_INTERVAL_MS) {
+                try {
+                    recognizer?.finalResult?.let { parseAndFlag(it) }
+                    recognizer?.reset()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Forced finalization failed", e)
+                }
+                lastForceFinal = now
             }
         }
     }
