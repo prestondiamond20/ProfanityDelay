@@ -3,6 +3,7 @@ package com.preston.profanitydelay
 import android.app.*
 import android.content.Intent
 import android.media.*
+import android.media.AudioManager
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -43,6 +44,8 @@ class AudioCaptureService : Service() {
     private var audioTrack: AudioTrack? = null
     private var recognizer: Recognizer? = null
     private var model: Model? = null
+    private var audioManager: AudioManager? = null
+    private var originalMusicVolume: Int = -1
 
     private val running = AtomicBoolean(false)
     private lateinit var profanityWords: Set<String>
@@ -59,6 +62,7 @@ class AudioCaptureService : Service() {
         super.onCreate()
         profanityWords = loadProfanityList()
         createNotificationChannel()
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -98,6 +102,7 @@ class AudioCaptureService : Service() {
 
             setupAudioCapture()
             setupAudioOutput()
+            muteSourceAudio()
         } catch (e: Exception) {
             Log.e(TAG, "Startup failed", e)
             android.os.Handler(mainLooper).post {
@@ -149,6 +154,26 @@ class AudioCaptureService : Service() {
         }
     }
 
+    /**
+     * Silences the phone's normal media volume so the original app (e.g.
+     * YouTube Music) can't be heard directly. AudioPlaybackCapture still
+     * receives full-volume audio regardless of this mute, so our own
+     * delayed copy (played on USAGE_ALARM, a separate volume channel)
+     * is the only thing you'll actually hear.
+     */
+    private fun muteSourceAudio() {
+        val am = audioManager ?: return
+        originalMusicVolume = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+    }
+
+    private fun restoreSourceAudio() {
+        val am = audioManager ?: return
+        if (originalMusicVolume >= 0) {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, originalMusicVolume, 0)
+        }
+    }
+
     private fun setupAudioCapture() {
         val projection = mediaProjection ?: return
         val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
@@ -182,10 +207,12 @@ class AudioCaptureService : Service() {
         val minBufSize = AudioTrack.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
+        // USAGE_ALARM routes our output to a volume channel independent of
+        // STREAM_MUSIC, which we mute below to silence the original source.
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(AudioAttributes.USAGE_ALARM)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
@@ -305,6 +332,7 @@ class AudioCaptureService : Service() {
 
     override fun onDestroy() {
         running.set(false)
+        restoreSourceAudio()
         audioRecord?.stop()
         audioRecord?.release()
         audioTrack?.stop()
