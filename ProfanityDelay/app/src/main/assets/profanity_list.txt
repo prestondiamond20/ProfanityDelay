@@ -1,0 +1,12 @@
+# One word per line, lowercase, no punctuation.
+# This is a starter list — edit freely to add/remove words.
+fuck
+shit
+bitch
+ass
+damn
+hell
+crap
+bastard
+dick
+piss
