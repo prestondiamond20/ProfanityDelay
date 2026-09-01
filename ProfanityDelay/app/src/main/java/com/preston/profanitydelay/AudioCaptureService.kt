@@ -33,6 +33,11 @@ class AudioCaptureService : Service() {
         private const val RECOGNIZER_SAMPLE_RATE = 16000
         private const val DELAY_MS = 10000L
         private const val FORCE_FINAL_INTERVAL_MS = 2000L
+        private const val PARTIAL_CHECK_INTERVAL_MS = 300L
+
+        // MainActivity sets this to show a live transcript. Same process, so a
+        // plain static callback is fine for a hobby prototype.
+        var transcriptListener: ((String) -> Unit)? = null
         private const val CHUNK_MS = 500L
         private const val CHUNK_SAMPLES = (SAMPLE_RATE * CHUNK_MS / 1000).toInt()
 
@@ -272,6 +277,7 @@ class AudioCaptureService : Service() {
      */
     private fun recognitionLoop() {
         var lastForceFinal = System.currentTimeMillis()
+        var lastPartialCheck = System.currentTimeMillis()
 
         while (running.get()) {
             var samples: ShortArray? = null
@@ -293,6 +299,31 @@ class AudioCaptureService : Service() {
             }
 
             val now = System.currentTimeMillis()
+
+            // Check the live partial transcript often. Partial results don't
+            // carry word timestamps, so on a hit we mute a wide recent window
+            // rather than a precise one - less surgical, but reacts instantly
+            // instead of waiting for the periodic forced flush below.
+            if (now - lastPartialCheck >= PARTIAL_CHECK_INTERVAL_MS) {
+                try {
+                    val partialJson = recognizer?.partialResult
+                    if (partialJson != null) {
+                        val partialText = JSONObject(partialJson).optString("partial")
+                        if (partialText.isNotBlank()) {
+                            postTranscript(partialText)
+                            if (containsProfanity(partialText)) {
+                                val nowRelative = now - streamStartMillis
+                                flaggedRanges.add(Pair(nowRelative - 3000, nowRelative + 500))
+                                postTranscript("[MUTED - live] " + partialText)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // ignore malformed partial JSON
+                }
+                lastPartialCheck = now
+            }
+
             if (now - lastForceFinal >= FORCE_FINAL_INTERVAL_MS) {
                 try {
                     recognizer?.finalResult?.let { parseAndFlag(it) }
@@ -350,18 +381,37 @@ class AudioCaptureService : Service() {
         }
     }
 
+    private fun postTranscript(text: String) {
+        if (text.isBlank()) return
+        android.os.Handler(mainLooper).post { transcriptListener?.invoke(text) }
+    }
+
+    /**
+     * Substring match, not exact-word match. The old exact-match check
+     * missed "fucking", "fuckin", "shitty", etc. entirely since they
+     * aren't literally equal to the base word in the list.
+     */
+    private fun containsProfanity(text: String): Boolean {
+        val lower = text.lowercase()
+        return profanityWords.any { lower.contains(it) }
+    }
+
     private fun parseAndFlag(json: String) {
         try {
             val obj = JSONObject(json)
+            val fullText = obj.optString("text")
+            if (fullText.isNotBlank()) postTranscript(fullText)
+
             val resultArray = obj.optJSONArray("result") ?: return
             for (i in 0 until resultArray.length()) {
                 val w = resultArray.getJSONObject(i)
                 val word = w.optString("word").lowercase()
-                if (word in profanityWords) {
+                if (containsProfanity(word)) {
                     val startMs = (w.optDouble("start") * 1000).toLong()
                     val endMs = (w.optDouble("end") * 1000).toLong()
                     flaggedRanges.add(Pair(startMs - 150, endMs + 150))
                     Log.i(TAG, "Flagged word at " + startMs + "ms-" + endMs + "ms")
+                    postTranscript("[MUTED] " + word)
                 }
             }
         } catch (e: Exception) {
