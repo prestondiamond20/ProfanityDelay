@@ -30,6 +30,7 @@ class AudioCaptureService : Service() {
         private const val NOTIF_ID = 1
 
         private const val SAMPLE_RATE = 44100
+        private const val RECOGNIZER_SAMPLE_RATE = 16000
         private const val DELAY_MS = 10000L
         private const val CHUNK_MS = 500L
         private const val CHUNK_SAMPLES = (SAMPLE_RATE * CHUNK_MS / 1000).toInt()
@@ -101,7 +102,7 @@ class AudioCaptureService : Service() {
             extractModelIfNeeded()
 
             model = Model(assetsModelPath())
-            recognizer = Recognizer(model, SAMPLE_RATE.toFloat()).apply { setWords(true) }
+            recognizer = Recognizer(model, RECOGNIZER_SAMPLE_RATE.toFloat()).apply { setWords(true) }
 
             setupAudioCapture()
             setupAudioOutput()
@@ -270,10 +271,34 @@ class AudioCaptureService : Service() {
                 Thread.sleep(20)
                 continue
             }
-            val gotFinal = recognizer?.acceptWaveForm(samples, samples!!.size) ?: false
-            val json = if (gotFinal) recognizer?.result else recognizer?.partialResult
-            json?.let { parseAndFlag(it) }
+            // The model expects RECOGNIZER_SAMPLE_RATE audio specifically;
+            // feeding it our full-quality capture rate directly throws.
+            try {
+                val downsampled = resample(samples!!, SAMPLE_RATE, RECOGNIZER_SAMPLE_RATE)
+                val gotFinal = recognizer?.acceptWaveForm(downsampled, downsampled.size) ?: false
+                val json = if (gotFinal) recognizer?.result else recognizer?.partialResult
+                json?.let { parseAndFlag(it) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Recognition step failed", e)
+            }
         }
+    }
+
+    /** Simple linear-interpolation resampler, good enough for feeding the recognizer. */
+    private fun resample(input: ShortArray, fromRate: Int, toRate: Int): ShortArray {
+        if (fromRate == toRate) return input
+        val ratio = fromRate.toDouble() / toRate.toDouble()
+        val outLen = (input.size / ratio).toInt()
+        val output = ShortArray(outLen)
+        for (i in 0 until outLen) {
+            val srcIndex = i * ratio
+            val idx0 = srcIndex.toInt()
+            val idx1 = (idx0 + 1).coerceAtMost(input.size - 1)
+            val frac = srcIndex - idx0
+            val sample = input[idx0] * (1.0 - frac) + input[idx1] * frac
+            output[i] = sample.toInt().toShort()
+        }
+        return output
     }
 
     private fun playbackLoop() {
