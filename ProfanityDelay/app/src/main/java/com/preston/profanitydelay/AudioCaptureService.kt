@@ -12,9 +12,12 @@ import androidx.core.app.NotificationCompat
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import java.io.File
+import java.io.FileOutputStream
 import java.util.ArrayDeque
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.ZipInputStream
 
 class AudioCaptureService : Service() {
 
@@ -29,6 +32,10 @@ class AudioCaptureService : Service() {
         private const val DELAY_MS = 5000L
         private const val CHUNK_MS = 500L
         private const val CHUNK_SAMPLES = (SAMPLE_RATE * CHUNK_MS / 1000).toInt()
+
+        // Must match the folder name inside vosk-model.zip (the zip's
+        // top-level folder), and the version downloaded in build.yml.
+        private const val MODEL_DIR_NAME = "vosk-model-small-en-us-0.15"
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -84,6 +91,8 @@ class AudioCaptureService : Service() {
                 }
             }, null)
 
+            extractModelIfNeeded()
+
             model = Model(assetsModelPath())
             recognizer = Recognizer(model, SAMPLE_RATE.toFloat()).apply { setWords(true) }
 
@@ -107,6 +116,37 @@ class AudioCaptureService : Service() {
         Thread(::playbackLoop, "playback-thread").start()
 
         return START_STICKY
+    }
+
+    /**
+     * Vosk needs the model on the real filesystem, not inside the APK's
+     * compressed assets. This unzips assets/vosk-model.zip into internal
+     * storage the first time the service runs, then reuses it after that.
+     */
+    private fun extractModelIfNeeded() {
+        val modelDir = File(filesDir, MODEL_DIR_NAME)
+        if (modelDir.exists() && modelDir.list()?.isNotEmpty() == true) {
+            return
+        }
+
+        assets.open("vosk-model.zip").use { input ->
+            ZipInputStream(input).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val outFile = File(filesDir, entry.name)
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        FileOutputStream(outFile).use { fos ->
+                            zis.copyTo(fos)
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+        }
     }
 
     private fun setupAudioCapture() {
@@ -242,7 +282,7 @@ class AudioCaptureService : Service() {
     }
 
     private fun assetsModelPath(): String {
-        return filesDir.absolutePath + "/vosk-model"
+        return File(filesDir, MODEL_DIR_NAME).absolutePath
     }
 
     private fun buildNotification(text: String): Notification {
