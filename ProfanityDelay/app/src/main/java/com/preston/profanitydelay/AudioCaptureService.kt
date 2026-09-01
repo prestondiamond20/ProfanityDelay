@@ -125,13 +125,9 @@ class AudioCaptureService : Service() {
             muteSourceAudio()
         } catch (e: Exception) {
             Log.e(TAG, "Startup failed", e)
-            android.os.Handler(mainLooper).post {
-                android.widget.Toast.makeText(
-                    applicationContext,
-                    "Filter failed to start: " + e.javaClass.simpleName + ": " + e.message,
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            }
+            val fullMessage = e.javaClass.simpleName + ": " + e.message +
+                "\n\nCause: " + (e.cause?.toString() ?: "none")
+            showErrorNotification(fullMessage)
             stopSelf()
             return
         }
@@ -452,6 +448,23 @@ class AudioCaptureService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .build()
+    }
+
+    /**
+     * Posts a full, expandable, non-dismissing-until-tapped notification
+     * with the complete error text - Toasts truncate long messages and
+     * disappear too fast to read or copy.
+     */
+    private fun showErrorNotification(message: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Profanity Delay - startup failed")
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(NOTIF_ID + 1, notification)
     }
 
     private fun createNotificationChannel() {
