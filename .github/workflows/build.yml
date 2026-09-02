@@ -24,14 +24,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ProfanityDelay/app/src/main/assets/vosk-model.zip
-          key: vosk-model-en-us-0.22
+          key: vosk-model-en-us-0.22-v2
 
       - name: Download Vosk speech model
         if: steps.cache-vosk.outputs.cache-hit != 'true'
         run: |
           mkdir -p app/src/main/assets
-          curl -L -o app/src/main/assets/vosk-model.zip \
+          curl -fSL --retry 3 -o app/src/main/assets/vosk-model.zip \
             https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip
+
+      - name: Verify the model download is a real, complete zip
+        run: |
+          echo "File size:"
+          ls -la app/src/main/assets/vosk-model.zip
+          echo ""
+          echo "Zip contents (first 10 entries):"
+          unzip -l app/src/main/assets/vosk-model.zip | head -15
+          echo ""
+          echo "Zip integrity test:"
+          unzip -t app/src/main/assets/vosk-model.zip | tail -5
 
       - uses: gradle/actions/setup-gradle@v4
         with:
